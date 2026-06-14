@@ -1,0 +1,9 @@
+.git
+.github
+bin
+doc
+README.md
+PLAN.md
+test-mailer
+*.test
+*.out

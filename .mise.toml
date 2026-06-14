@@ -4,10 +4,11 @@ go = "1.26.4"
 [env]
 MODULE = "github.com/nogo/ghost-mailgun-proxy"
 BINARY = "bin/ghost-mailgun-proxy"
+IMAGE  = "ghcr.io/nogo/ghost-mailgun-proxy"
 
 [tasks.build]
 description = "Build the binary"
-sources     = ["**/*.go", "go.mod", "go.sum", "mise.toml"]
+sources     = ["**/*.go", "go.mod", "go.sum", ".mise.toml"]
 outputs     = ["bin/ghost-mailgun-proxy"]
 run = """
 go build -ldflags="-s -w" -o "$BINARY" .
@@ -70,3 +71,34 @@ fi
 description = "Full local verification: vet, fmt, tidy, test, lint"
 depends = ["vet", "fmt:check", "tidy", "test", "lint"]
 run = 'echo "All checks passed."'
+
+[tasks."docker:build"]
+description = "Build the container image locally"
+sources     = ["Dockerfile", ".dockerignore", "**/*.go", "go.mod"]
+run = 'docker build --pull -t "$IMAGE:local" .'
+
+[tasks."docker:scan-config"]
+description = "Scan Dockerfile and repository config with Trivy"
+sources     = ["Dockerfile", ".dockerignore", ".github/**/*.yml", ".github/**/*.yaml"]
+run = """
+if command -v trivy >/dev/null 2>&1; then
+    trivy config --exit-code 1 .
+else
+    echo "trivy not installed, skipping"
+fi
+"""
+
+[tasks."docker:scan-image"]
+description = "Scan the locally built container image with Trivy"
+run = """
+if command -v trivy >/dev/null 2>&1; then
+    trivy image --exit-code 1 --severity HIGH,CRITICAL "$IMAGE:local"
+else
+    echo "trivy not installed, skipping"
+fi
+"""
+
+[tasks."docker:check"]
+description = "Build and scan the local container image"
+depends = ["docker:scan-config", "docker:build", "docker:scan-image"]
+run = 'echo "Docker checks passed."'

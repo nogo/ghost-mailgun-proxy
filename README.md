@@ -66,6 +66,12 @@ docker build -t ghost-mailgun-proxy .
 docker run -e PROXY_API_KEY=key -e SMTP_HOST=mail.example.com ghost-mailgun-proxy
 ```
 
+Images are published to GitHub Container Registry by the `Publish container` workflow for version tags matching `v*` whose commit is on `main`, and by manual workflow dispatch:
+
+```text
+ghcr.io/nogo/ghost-mailgun-proxy
+```
+
 ## Local Testing
 
 ### With Mailpit
