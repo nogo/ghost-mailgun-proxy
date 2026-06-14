@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -73,7 +74,9 @@ func main() {
 		Timeout:      smtpTimeout,
 	}}
 
-	mux := newMux(apiKey, sender)
+	mux := newMuxWithConfig(apiKey, sender, HandlerConfig{
+		Debug: envBool("PROXY_DEBUG"),
+	})
 
 	server := &http.Server{
 		Addr:              listen,
@@ -94,6 +97,15 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func validSMTPTLS(mode string) bool {

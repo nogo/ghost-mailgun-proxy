@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -262,6 +263,53 @@ func TestMessagesHandler_PartialFailure(t *testing.T) {
 	}
 }
 
+func TestMessagesHandler_RedactsRecipientLogsByDefault(t *testing.T) {
+	var logs bytes.Buffer
+	captureLogs(t, &logs)
+
+	sender := &fakeSender{
+		errors: map[string]error{
+			"alice@example.com": fmt.Errorf("connection refused"),
+		},
+	}
+	h := newMux("test-key", sender)
+
+	req := newGhostRequest(t, "test-key", ghostFields())
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 on partial failure", rr.Code)
+	}
+	got := logs.String()
+	if strings.Contains(got, "alice@example.com") || strings.Contains(got, "bob@example.com") {
+		t.Fatalf("default logs leaked recipient address:\n%s", got)
+	}
+	if !strings.Contains(got, "recipients=2 sent=1 failed=1") {
+		t.Fatalf("default logs missing aggregate counts:\n%s", got)
+	}
+}
+
+func TestMessagesHandler_DebugLogsRecipients(t *testing.T) {
+	var logs bytes.Buffer
+	captureLogs(t, &logs)
+
+	sender := &fakeSender{}
+	h := newMuxWithConfig("test-key", sender, HandlerConfig{Debug: true})
+
+	req := newGhostRequest(t, "test-key", ghostFields())
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rr.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "sent to alice@example.com") || !strings.Contains(got, "sent to bob@example.com") {
+		t.Fatalf("debug logs did not include recipient addresses:\n%s", got)
+	}
+}
+
 func TestMessagesHandler_AllFail(t *testing.T) {
 	sender := &fakeSender{
 		errors: map[string]error{
@@ -334,4 +382,16 @@ func TestHealthz(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("got %d, want 200", rr.Code)
 	}
+}
+
+func captureLogs(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
 }

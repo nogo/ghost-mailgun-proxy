@@ -12,8 +12,16 @@ import (
 	"strings"
 )
 
+type HandlerConfig struct {
+	Debug bool
+}
+
 // newMux returns an http.Handler with all routes wired up.
 func newMux(apiKey string, sender Sender) http.Handler {
+	return newMuxWithConfig(apiKey, sender, HandlerConfig{})
+}
+
+func newMuxWithConfig(apiKey string, sender Sender, config HandlerConfig) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +34,7 @@ func newMux(apiKey string, sender Sender) http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		messagesHandler(w, r, sender)
+		messagesHandler(w, r, sender, config)
 	})
 
 	mux.HandleFunc("GET /v3/{domain}/events", func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +68,7 @@ func constantTimeEqual(a, b string) bool {
 	return equal && len(a) == len(b)
 }
 
-func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender) {
+func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender, config HandlerConfig) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "bad form data", http.StatusBadRequest)
 		return
@@ -122,10 +130,15 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender) {
 	}
 
 	var failCount int
+	var successCount int
 	for _, to := range recipients {
 		toHeader, toAddr, err := parseAddressField("to", to)
 		if err != nil {
-			log.Printf("error: invalid recipient %q: %v", to, err)
+			if config.Debug {
+				log.Printf("debug: invalid recipient %q: %v", to, err)
+			} else {
+				log.Printf("error: invalid recipient address")
+			}
 			failCount++
 			continue
 		}
@@ -137,12 +150,20 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender) {
 		pText := replaceRecipientVars(text, vars)
 		pListUnsub := cleanListUnsubscribe(replaceRecipientVars(listUnsub, vars))
 		if hasHeaderBreak(pSubject) {
-			log.Printf("error: subject for %s contains invalid line break", toAddr)
+			if config.Debug {
+				log.Printf("debug: subject for %s contains invalid line break", toAddr)
+			} else {
+				log.Printf("error: subject contains invalid line break")
+			}
 			failCount++
 			continue
 		}
 		if hasHeaderBreak(pListUnsub) {
-			log.Printf("error: List-Unsubscribe for %s contains invalid line break", toAddr)
+			if config.Debug {
+				log.Printf("debug: List-Unsubscribe for %s contains invalid line break", toAddr)
+			} else {
+				log.Printf("error: List-Unsubscribe contains invalid line break")
+			}
 			failCount++
 			continue
 		}
@@ -167,18 +188,30 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender) {
 
 		msg, err := buildMessage(email)
 		if err != nil {
-			log.Printf("error: build message for %s failed: %v", toAddr, err)
+			if config.Debug {
+				log.Printf("debug: build message for %s failed: %v", toAddr, err)
+			} else {
+				log.Printf("error: build message failed: %v", err)
+			}
 			failCount++
 			continue
 		}
 		if err := sender.Send(fromAddr, toAddr, msg); err != nil {
-			log.Printf("error: send to %s failed: %v", toAddr, err)
+			if config.Debug {
+				log.Printf("debug: send to %s failed: %v", toAddr, err)
+			} else {
+				log.Printf("error: send failed: %v", err)
+			}
 			failCount++
 			continue
 		}
-		log.Printf("sent to %s", toAddr)
+		successCount++
+		if config.Debug {
+			log.Printf("debug: sent to %s", toAddr)
+		}
 	}
 
+	log.Printf("message processed domain=%s recipients=%d sent=%d failed=%d", domain, len(recipients), successCount, failCount)
 	if failCount == len(recipients) {
 		http.Error(w, "all recipients failed", http.StatusInternalServerError)
 		return

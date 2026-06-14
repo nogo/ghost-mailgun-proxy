@@ -24,6 +24,7 @@ All settings are environment variables:
 |---|---|---|---|
 | `PROXY_LISTEN` | no | `:8787` | HTTP listen address |
 | `PROXY_API_KEY` | yes | — | API key (matched against Ghost's Mailgun API key) |
+| `PROXY_DEBUG` | no | `false` | Log per-recipient email addresses for troubleshooting |
 | `SMTP_HOST` | yes | — | SMTP server hostname |
 | `SMTP_PORT` | no | `587` | SMTP server port |
 | `SMTP_USER` | no | — | SMTP username (skip auth if empty) |
@@ -31,6 +32,8 @@ All settings are environment variables:
 | `SMTP_TLS` | no | `starttls` | `starttls`, `tls`, or `none` |
 | `SMTP_TIMEOUT` | no | `30s` | SMTP dial and command deadline |
 | `SMTP_FROM_OVERRIDE` | no | — | Override SMTP envelope sender |
+
+By default, logs contain only aggregate send counts and do not include subscriber email addresses. Set `PROXY_DEBUG=true` only while troubleshooting.
 
 ## Ghost Configuration
 
