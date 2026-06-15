@@ -25,15 +25,21 @@ All settings are environment variables:
 | `PROXY_LISTEN` | no | `:8787` | HTTP listen address |
 | `PROXY_API_KEY` | yes | — | API key (matched against Ghost's Mailgun API key) |
 | `PROXY_DEBUG` | no | `false` | Log per-recipient email addresses for troubleshooting |
+| `PROXY_MAX_RECIPIENTS` | no | `100` | Maximum recipients accepted in one Ghost batch |
 | `SMTP_HOST` | yes | — | SMTP server hostname |
 | `SMTP_PORT` | no | `587` | SMTP server port |
 | `SMTP_USER` | no | — | SMTP username (skip auth if empty) |
 | `SMTP_PASS` | no | — | SMTP password |
 | `SMTP_TLS` | no | `starttls` | `starttls`, `tls`, or `none` |
 | `SMTP_TIMEOUT` | no | `30s` | SMTP dial and command deadline |
+| `SMTP_HELO` | no | — | Custom SMTP EHLO/HELO name |
 | `SMTP_FROM_OVERRIDE` | no | — | Override SMTP envelope sender |
 
 By default, logs contain only aggregate send counts and do not include subscriber email addresses. Set `PROXY_DEBUG=true` only while troubleshooting.
+
+For each Ghost batch request, the proxy opens one SMTP connection and sends each personalized recipient message over that session. This avoids one SMTP login per subscriber and is friendlier to mail-server connection limits.
+
+Requests with more than `PROXY_MAX_RECIPIENTS` recipients are rejected with `400`. For substantially larger lists, use a durable queue rather than raising this limit indefinitely.
 
 ## Ghost Configuration
 

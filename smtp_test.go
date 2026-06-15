@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockSMTPServer accepts one connection and records the DATA payload.
@@ -94,6 +95,51 @@ func TestSMTPSender_Send(t *testing.T) {
 	}
 	if !strings.Contains(data, "Hello") {
 		t.Errorf("expected body in DATA, got:\n%s", data)
+	}
+}
+
+func TestSMTPSender_SendBatchReusesConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	captures := make(chan smtpCapture, 2)
+	go captureSMTP(t, ln, 1, captures)
+
+	addr := ln.Addr().(*net.TCPAddr)
+	sender := &SMTPSender{Config: SMTPConfig{
+		Host:    "127.0.0.1",
+		Port:    addr.Port,
+		TLS:     "none",
+		Timeout: 2 * time.Second,
+	}}
+
+	errs := sender.SendBatch([]SendRequest{
+		{From: "sender@example.com", To: "one@example.com", Msg: []byte("Subject: One\r\n\r\nOne")},
+		{From: "sender@example.com", To: "two@example.com", Msg: []byte("Subject: Two\r\n\r\nTwo")},
+	})
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("SendBatch[%d] failed: %v", i, err)
+		}
+	}
+
+	got := map[string]string{}
+	for range 2 {
+		select {
+		case capture := <-captures:
+			got[capture.RcptTo] = capture.Data
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for SMTP captures")
+		}
+	}
+	if !strings.Contains(got["one@example.com"], "Subject: One") {
+		t.Fatalf("missing first message capture: %#v", got)
+	}
+	if !strings.Contains(got["two@example.com"], "Subject: Two") {
+		t.Fatalf("missing second message capture: %#v", got)
 	}
 }
 

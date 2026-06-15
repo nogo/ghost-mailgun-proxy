@@ -13,7 +13,8 @@ import (
 )
 
 type HandlerConfig struct {
-	Debug bool
+	Debug         bool
+	MaxRecipients int
 }
 
 // newMux returns an http.Handler with all routes wired up.
@@ -22,6 +23,10 @@ func newMux(apiKey string, sender Sender) http.Handler {
 }
 
 func newMuxWithConfig(apiKey string, sender Sender, config HandlerConfig) http.Handler {
+	if config.MaxRecipients <= 0 {
+		config.MaxRecipients = 100
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +121,10 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender, conf
 		http.Error(w, "at least one recipient is required", http.StatusBadRequest)
 		return
 	}
+	if len(recipients) > config.MaxRecipients {
+		http.Error(w, fmt.Sprintf("too many recipients: got %d, max %d", len(recipients), config.MaxRecipients), http.StatusBadRequest)
+		return
+	}
 	if hasHeaderBreak(listUnsubPost) {
 		http.Error(w, "h:List-Unsubscribe-Post contains invalid line break", http.StatusBadRequest)
 		return
@@ -131,6 +140,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender, conf
 
 	var failCount int
 	var successCount int
+	var sendRequests []SendRequest
 	for _, to := range recipients {
 		toHeader, toAddr, err := parseAddressField("to", to)
 		if err != nil {
@@ -196,7 +206,18 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender, conf
 			failCount++
 			continue
 		}
-		if err := sender.Send(fromAddr, toAddr, msg); err != nil {
+
+		sendRequests = append(sendRequests, SendRequest{
+			From: fromAddr,
+			To:   toAddr,
+			Msg:  msg,
+		})
+	}
+
+	sendErrs := sendAll(sender, sendRequests)
+	for i, err := range sendErrs {
+		toAddr := sendRequests[i].To
+		if err != nil {
 			if config.Debug {
 				log.Printf("debug: send to %s failed: %v", toAddr, err)
 			} else {
@@ -225,10 +246,19 @@ func messagesHandler(w http.ResponseWriter, r *http.Request, sender Sender, conf
 	})
 }
 
-func eventsHandler(w http.ResponseWriter, _ *http.Request) {
+func eventsHandler(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+	baseURL := "http://" + r.Host + "/v3/" + domain + "/events/empty"
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"items": []any{},
+		"paging": map[string]string{
+			"previous": baseURL + "-previous",
+			"first":    baseURL + "-first",
+			"last":     baseURL + "-last",
+			"next":     baseURL + "-next",
+		},
 		"pages": map[string]any{
 			"next":     map[string]string{"page": ""},
 			"previous": map[string]string{"page": ""},
@@ -268,4 +298,16 @@ func parseAddressField(field, value string) (headerValue, smtpAddress string, er
 
 func hasHeaderBreak(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
+}
+
+func sendAll(sender Sender, requests []SendRequest) []error {
+	if batchSender, ok := sender.(BatchSender); ok {
+		return batchSender.SendBatch(requests)
+	}
+
+	errs := make([]error, len(requests))
+	for i, req := range requests {
+		errs[i] = sender.Send(req.From, req.To, req.Msg)
+	}
+	return errs
 }

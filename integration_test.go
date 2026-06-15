@@ -30,7 +30,7 @@ func TestIntegration_GhostMailgunRequestToSMTP(t *testing.T) {
 	defer ln.Close()
 
 	captures := make(chan smtpCapture, 2)
-	go captureSMTP(t, ln, 2, captures)
+	go captureSMTP(t, ln, 1, captures)
 
 	addr := ln.Addr().(*net.TCPAddr)
 	sender := &SMTPSender{Config: SMTPConfig{
@@ -167,6 +167,9 @@ func handleSMTPConnection(conn net.Conn, captures chan<- smtpCapture) {
 			if line == "." {
 				inData = false
 				capture.Data = strings.Join(dataLines, "\r\n")
+				captures <- capture
+				capture = smtpCapture{}
+				dataLines = nil
 				write("250 OK")
 				continue
 			}
@@ -191,7 +194,6 @@ func handleSMTPConnection(conn net.Conn, captures chan<- smtpCapture) {
 			inData = true
 		case upper == "QUIT":
 			write("221 Bye")
-			captures <- capture
 			return
 		default:
 			write("500 Unknown command")

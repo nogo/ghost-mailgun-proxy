@@ -222,6 +222,53 @@ func TestMessagesHandler_Validation(t *testing.T) {
 	}
 }
 
+func TestMessagesHandler_MaxRecipients(t *testing.T) {
+	fields := ghostFields()
+	fields["to"] = []string{"alice@example.com", "bob@example.com"}
+
+	h := newMuxWithConfig("test-key", &fakeSender{}, HandlerConfig{MaxRecipients: 1})
+	req := newGhostRequest(t, "test-key", fields)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "too many recipients") {
+		t.Fatalf("unexpected response body: %q", rr.Body.String())
+	}
+}
+
+func TestMessagesHandler_DefaultMaxRecipientsAllowsHundred(t *testing.T) {
+	fields := ghostFields()
+	fields["to"] = make([]string, 100)
+	var recipientVars strings.Builder
+	recipientVars.WriteString("{")
+	for i := range fields["to"] {
+		email := fmt.Sprintf("reader-%03d@example.com", i)
+		fields["to"][i] = email
+		if i > 0 {
+			recipientVars.WriteString(",")
+		}
+		recipientVars.WriteString(fmt.Sprintf("%q:{\"name\":\"Reader\",\"list_unsubscribe\":\"https://example.com/unsub/%03d\"}", email, i))
+	}
+	recipientVars.WriteString("}")
+	fields["recipient-variables"] = []string{recipientVars.String()}
+
+	sender := &fakeSender{}
+	h := newMux("test-key", sender)
+	req := newGhostRequest(t, "test-key", fields)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if len(sender.calls) != 100 {
+		t.Fatalf("got %d sends, want 100", len(sender.calls))
+	}
+}
+
 func TestMessagesHandler_RecipientVariableHeaderInjectionFailsRecipient(t *testing.T) {
 	sender := &fakeSender{}
 	h := newMux("test-key", sender)
@@ -348,6 +395,16 @@ func TestEventsHandler(t *testing.T) {
 	items, ok := resp["items"].([]any)
 	if !ok || len(items) != 0 {
 		t.Errorf("expected empty items array, got %v", resp["items"])
+	}
+	paging, ok := resp["paging"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Mailgun paging object, got %T", resp["paging"])
+	}
+	for _, key := range []string{"previous", "first", "last", "next"} {
+		value, ok := paging[key].(string)
+		if !ok || value == "" {
+			t.Fatalf("paging[%s] = %#v, want non-empty string", key, paging[key])
+		}
 	}
 }
 

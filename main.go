@@ -56,6 +56,11 @@ func main() {
 		log.Fatalf("invalid SMTP_TIMEOUT: %v", err)
 	}
 
+	maxRecipients, err := strconv.Atoi(envOr("PROXY_MAX_RECIPIENTS", "100"))
+	if err != nil || maxRecipients <= 0 {
+		log.Fatalf("invalid PROXY_MAX_RECIPIENTS: expected positive integer")
+	}
+
 	fromOverride := os.Getenv("SMTP_FROM_OVERRIDE")
 	if fromOverride != "" {
 		_, fromOverride, err = parseAddressField("SMTP_FROM_OVERRIDE", fromOverride)
@@ -72,10 +77,12 @@ func main() {
 		TLS:          smtpTLS,
 		FromOverride: fromOverride,
 		Timeout:      smtpTimeout,
+		HELO:         os.Getenv("SMTP_HELO"),
 	}}
 
 	mux := newMuxWithConfig(apiKey, sender, HandlerConfig{
-		Debug: envBool("PROXY_DEBUG"),
+		Debug:         envBool("PROXY_DEBUG"),
+		MaxRecipients: maxRecipients,
 	})
 
 	server := &http.Server{

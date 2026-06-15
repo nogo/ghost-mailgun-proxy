@@ -18,6 +18,16 @@ type Sender interface {
 	Send(from, to string, msg []byte) error
 }
 
+type SendRequest struct {
+	From string
+	To   string
+	Msg  []byte
+}
+
+type BatchSender interface {
+	SendBatch(requests []SendRequest) []error
+}
+
 // SMTPConfig holds SMTP connection parameters.
 type SMTPConfig struct {
 	Host         string
@@ -27,6 +37,7 @@ type SMTPConfig struct {
 	TLS          string // "starttls", "tls", or "none"
 	FromOverride string
 	Timeout      time.Duration
+	HELO         string
 }
 
 // SMTPSender sends email via SMTP.
@@ -35,9 +46,46 @@ type SMTPSender struct {
 }
 
 func (s *SMTPSender) Send(from, to string, msg []byte) error {
-	if s.Config.FromOverride != "" {
-		from = s.Config.FromOverride
+	errs := s.SendBatch([]SendRequest{{From: from, To: to, Msg: msg}})
+	if len(errs) == 0 {
+		return nil
 	}
+	return errs[0]
+}
+
+func (s *SMTPSender) SendBatch(requests []SendRequest) []error {
+	errs := make([]error, len(requests))
+	if len(requests) == 0 {
+		return errs
+	}
+
+	c, conn, timeout, err := s.connect()
+	if err != nil {
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+	defer c.Close()
+
+	for i, req := range requests {
+		if err := s.sendWithClient(c, conn, timeout, req); err != nil {
+			errs[i] = err
+			if resetErr := resetClient(c, conn, timeout); resetErr != nil {
+				for j := i + 1; j < len(errs); j++ {
+					errs[j] = fmt.Errorf("smtp reset after failure: %w", resetErr)
+				}
+				return errs
+			}
+		}
+	}
+
+	_ = setDeadline(conn, timeout)
+	_ = c.Quit()
+	return errs
+}
+
+func (s *SMTPSender) connect() (*smtp.Client, net.Conn, time.Duration, error) {
 	timeout := s.Config.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -54,55 +102,86 @@ func (s *SMTPSender) Send(from, to string, msg []byte) error {
 		dialer := &net.Dialer{Timeout: timeout}
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: s.Config.Host})
 		if err != nil {
-			return fmt.Errorf("tls dial: %w", err)
+			return nil, nil, 0, fmt.Errorf("tls dial: %w", err)
 		}
 		if err := setDeadline(conn, timeout); err != nil {
 			conn.Close()
-			return err
+			return nil, nil, 0, err
 		}
 		c, err = smtp.NewClient(conn, s.Config.Host)
 		if err != nil {
 			conn.Close()
-			return fmt.Errorf("smtp client: %w", err)
+			return nil, nil, 0, fmt.Errorf("smtp client: %w", err)
 		}
 	case "none", "starttls":
 		dialer := &net.Dialer{Timeout: timeout}
 		conn, err = dialer.Dial("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("smtp dial: %w", err)
+			return nil, nil, 0, fmt.Errorf("smtp dial: %w", err)
 		}
 		if err := setDeadline(conn, timeout); err != nil {
 			conn.Close()
-			return err
+			return nil, nil, 0, err
 		}
 		c, err = smtp.NewClient(conn, s.Config.Host)
 		if err != nil {
 			conn.Close()
-			return fmt.Errorf("smtp client: %w", err)
+			return nil, nil, 0, fmt.Errorf("smtp client: %w", err)
 		}
 		if s.Config.TLS == "starttls" {
+			if s.Config.HELO != "" {
+				if err := setDeadline(conn, timeout); err != nil {
+					c.Close()
+					return nil, nil, 0, err
+				}
+				if err := c.Hello(s.Config.HELO); err != nil {
+					c.Close()
+					return nil, nil, 0, fmt.Errorf("smtp hello: %w", err)
+				}
+			}
 			if err := setDeadline(conn, timeout); err != nil {
 				c.Close()
-				return err
+				return nil, nil, 0, err
 			}
 			if err := c.StartTLS(&tls.Config{ServerName: s.Config.Host}); err != nil {
 				c.Close()
-				return fmt.Errorf("starttls: %w", err)
+				return nil, nil, 0, fmt.Errorf("starttls: %w", err)
 			}
 		}
 	default:
-		return fmt.Errorf("invalid SMTP TLS mode %q", s.Config.TLS)
+		return nil, nil, 0, fmt.Errorf("invalid SMTP TLS mode %q", s.Config.TLS)
 	}
-	defer c.Close()
+
+	if s.Config.HELO != "" && s.Config.TLS != "starttls" {
+		if err := setDeadline(conn, timeout); err != nil {
+			c.Close()
+			return nil, nil, 0, err
+		}
+		if err := c.Hello(s.Config.HELO); err != nil {
+			c.Close()
+			return nil, nil, 0, fmt.Errorf("smtp hello: %w", err)
+		}
+	}
 
 	if s.Config.User != "" {
 		if err := setDeadline(conn, timeout); err != nil {
-			return err
+			c.Close()
+			return nil, nil, 0, err
 		}
 		auth := smtp.PlainAuth("", s.Config.User, s.Config.Pass, s.Config.Host)
 		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
+			c.Close()
+			return nil, nil, 0, fmt.Errorf("smtp auth: %w", err)
 		}
+	}
+
+	return c, conn, timeout, nil
+}
+
+func (s *SMTPSender) sendWithClient(c *smtp.Client, conn net.Conn, timeout time.Duration, req SendRequest) error {
+	from := req.From
+	if s.Config.FromOverride != "" {
+		from = s.Config.FromOverride
 	}
 
 	if err := setDeadline(conn, timeout); err != nil {
@@ -114,7 +193,7 @@ func (s *SMTPSender) Send(from, to string, msg []byte) error {
 	if err := setDeadline(conn, timeout); err != nil {
 		return err
 	}
-	if err := c.Rcpt(to); err != nil {
+	if err := c.Rcpt(req.To); err != nil {
 		return fmt.Errorf("RCPT TO: %w", err)
 	}
 
@@ -129,7 +208,7 @@ func (s *SMTPSender) Send(from, to string, msg []byte) error {
 		w.Close()
 		return err
 	}
-	if _, err := w.Write(msg); err != nil {
+	if _, err := w.Write(req.Msg); err != nil {
 		return fmt.Errorf("write data: %w", err)
 	}
 	if err := setDeadline(conn, timeout); err != nil {
@@ -140,10 +219,14 @@ func (s *SMTPSender) Send(from, to string, msg []byte) error {
 		return fmt.Errorf("close data: %w", err)
 	}
 
+	return nil
+}
+
+func resetClient(c *smtp.Client, conn net.Conn, timeout time.Duration) error {
 	if err := setDeadline(conn, timeout); err != nil {
 		return err
 	}
-	return c.Quit()
+	return c.Reset()
 }
 
 func setDeadline(conn net.Conn, timeout time.Duration) error {
