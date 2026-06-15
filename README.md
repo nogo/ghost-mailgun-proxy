@@ -78,6 +78,8 @@ Images are published to GitHub Container Registry by the `Publish container` wor
 ghcr.io/nogo/ghost-mailgun-proxy
 ```
 
+Published images include `linux/amd64` and `linux/arm64` platforms.
+
 ## Local Testing
 
 ### With Mailpit
